@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 type Job = {
   title: string;
@@ -12,9 +12,21 @@ type Job = {
   apply_url: string;
 };
 
-type JobsResponse = { total_live: number; jobs: Job[] };
+type JobsResponse = { total_live: number; matched: number; jobs: Job[] };
 
 const API_URL = "https://artificialintelligencejobs.co/api/jobs";
+const PAGE_SIZE = 25;
+const CATEGORIES = [
+  "All disciplines",
+  "Engineering",
+  "Marketing",
+  "Operations",
+  "Other",
+  "Policy & Safety",
+  "Product",
+  "Research",
+  "Sales & GTM",
+];
 
 function formatDate(date: string) {
   return new Intl.DateTimeFormat("en", {
@@ -26,6 +38,8 @@ function formatDate(date: string) {
 function Home() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [total, setTotal] = useState(0);
+  const [matched, setMatched] = useState(0);
+  const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All disciplines");
   const [remoteOnly, setRemoteOnly] = useState(false);
@@ -33,39 +47,42 @@ function Home() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    const controller = new AbortController();
+
     const loadJobs = async () => {
       try {
-        const response = await fetch(API_URL);
+        setLoading(true);
+        setError("");
+        const params = new URLSearchParams({
+          limit: String(PAGE_SIZE),
+          offset: String((page - 1) * PAGE_SIZE),
+        });
+        if (query.trim()) params.set("q", query.trim());
+        if (category !== "All disciplines") params.set("category", category);
+        if (remoteOnly) params.set("remote", "true");
+
+        const response = await fetch(`${API_URL}?${params}`, {
+          signal: controller.signal,
+        });
         if (!response.ok) throw new Error("Unable to load jobs");
         const data: JobsResponse = await response.json();
         setJobs(data.jobs);
         setTotal(data.total_live);
-      } catch {
+        setMatched(data.matched);
+      } catch (requestError) {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") {
+          return;
+        }
         setError("We could not load the latest roles. Please try again.");
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     };
     loadJobs();
-  }, []);
+    return () => controller.abort();
+  }, [page, query, category, remoteOnly]);
 
-  const categories = useMemo(
-    () => ["All disciplines", ...new Set(jobs.map((job) => job.category))],
-    [jobs],
-  );
-  const filteredJobs = useMemo(
-    () =>
-      jobs.filter((job) => {
-        const searchable =
-          `${job.title} ${job.company} ${job.location}`.toLowerCase();
-        return (
-          searchable.includes(query.toLowerCase()) &&
-          (category === "All disciplines" || job.category === category) &&
-          (!remoteOnly || job.remote)
-        );
-      }),
-    [jobs, query, category, remoteOnly],
-  );
+  const pageCount = Math.max(1, Math.ceil(matched / PAGE_SIZE));
 
   return (
     <main>
@@ -142,7 +159,10 @@ function Home() {
                 className="search-input w-full border border-[#cbc9c0] bg-transparent py-3 pl-10 pr-4 text-sm placeholder:text-[#89918b]"
                 placeholder="Search title, company, city"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setPage(1);
+                  setQuery(event.target.value);
+                }}
               />
             </label>
             <label>
@@ -150,9 +170,12 @@ function Home() {
               <select
                 className="filter-select w-full border border-[#cbc9c0] bg-transparent px-4 py-3 text-sm sm:min-w-44"
                 value={category}
-                onChange={(event) => setCategory(event.target.value)}
+                onChange={(event) => {
+                  setPage(1);
+                  setCategory(event.target.value);
+                }}
               >
-                {categories.map((item) => (
+                {CATEGORIES.map((item) => (
                   <option key={item}>{item}</option>
                 ))}
               </select>
@@ -162,14 +185,17 @@ function Home() {
 
         <div className="mb-6 flex items-center justify-between">
           <p className="mono text-xs text-[#7b857e]">
-            {filteredJobs.length} roles shown
+            {matched.toLocaleString()} roles found
           </p>
           <label className="flex cursor-pointer items-center gap-2 text-xs font-bold">
             <input
               type="checkbox"
               className="h-4 w-4 accent-[#172321]"
               checked={remoteOnly}
-              onChange={(event) => setRemoteOnly(event.target.checked)}
+              onChange={(event) => {
+                setPage(1);
+                setRemoteOnly(event.target.checked);
+              }}
             />{" "}
             Remote only
           </label>
@@ -184,13 +210,13 @@ function Home() {
             {error}
           </div>
         )}
-        {!loading && !error && filteredJobs.length === 0 && (
+        {!loading && !error && jobs.length === 0 && (
           <div className="border-y border-[#d8d5cc] py-16 text-center text-sm text-[#66716b]">
             No roles match those filters.
           </div>
         )}
         <div className="divide-y divide-[#d8d5cc] border-y border-[#d8d5cc]">
-          {filteredJobs.map((job) => (
+          {jobs.map((job) => (
             <article
               className="job-row grid gap-5 px-1 py-6 lg:grid-cols-[1fr_1fr_auto] lg:items-center lg:gap-10"
               key={job.url}
@@ -241,6 +267,32 @@ function Home() {
             </article>
           ))}
         </div>
+        {!loading && !error && matched > 0 && (
+          <nav
+            aria-label="Jobs pagination"
+            className="mt-8 flex items-center justify-between gap-4"
+          >
+            <button
+              className="action-button action-button--light disabled:cursor-not-allowed disabled:opacity-40"
+              type="button"
+              disabled={page === 1}
+              onClick={() => setPage((currentPage) => currentPage - 1)}
+            >
+              <span aria-hidden="true">←</span> Previous
+            </button>
+            <span className="mono text-xs text-[#66716b]">
+              Page {page} of {pageCount}
+            </span>
+            <button
+              className="action-button action-button--dark disabled:cursor-not-allowed disabled:opacity-40"
+              type="button"
+              disabled={page === pageCount}
+              onClick={() => setPage((currentPage) => currentPage + 1)}
+            >
+              Next <span aria-hidden="true">→</span>
+            </button>
+          </nav>
+        )}
       </section>
       <footer className="border-t border-[#d8d5cc] px-6 py-8 lg:px-10">
         <div className="mx-auto flex max-w-7xl flex-col gap-3 text-xs text-[#66716b] sm:flex-row sm:items-center sm:justify-between">
